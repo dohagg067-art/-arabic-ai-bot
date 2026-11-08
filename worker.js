@@ -162,6 +162,7 @@ async function processUpdate(update, env) {
     await sendText(env, chatId, "أرسل رسالة نصية من فضلك، فأنا لا أدعم الوسائط حالياً.");
     return;
   }
+  
 
   const cmd = text.match(/^\/(\w+)(?:@\w+)?(?:\s|$)/);
   if (cmd) {
@@ -205,7 +206,7 @@ async function processUpdate(update, env) {
   }
   clearInterval(timer);
 
-  await sendText(env, chatId, answer + trimmedNote);
+   await sendText(env, chatId, cleanText(answer) + trimmedNote); 
   try {
     await stub.append(input, answer, Date.now());
   } catch (e) {
@@ -323,3 +324,6 @@ function splitText(t, max) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function cleanText(t) {
+  return t.replace(/\*\*/g, "").replace(/^#{1,6}\s+/gm, "").replace(/`{3}/g, "");
+}
