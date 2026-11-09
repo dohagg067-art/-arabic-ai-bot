@@ -9,13 +9,14 @@ const RATE_LIMIT = 12;
 const RATE_WINDOW_MS = 60_000;
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
 const TG_CHUNK = 4000;
+const BC_BATCH = 20; // عدد الرسائل في كل دفعة بث
+const BC_DELAY_MS = 1500; // الفاصل بين الدفعات
+const REGISTRY_NAME = "__registry__";
 
 const LINKS = {
   channel: "https://t.me/LCZX2rwquB8wOWMx",
   courseBasic: "https://youtube.com/@changewavetradinggroup?si=ZKZTfKeq9zg3g8ML",
   courseAdvanced: "https://t.me/+dlEdfe7TGHo1YTAx",
-  broker1: "https://dupoin.pro/cevrt3o6b",
-  broker2: "https://dupoin.me/lfdzstgll",
   admin1: "https://t.me/Yazan33kb",
   admin2: "https://t.me/MARWA_ELSABBAGH",
 };
@@ -66,7 +67,7 @@ const MENU_KEYBOARD = {
       { text: "🎓 كورسات تعليمية", callback_data: "courses" },
     ],
     [
-      { text: "📝 التسجيل في البروكر", callback_data: "broker" },
+      { text: "💰 خطة الربح", callback_data: "plan" },
       { text: "💬 التواصل مع الإدارة", callback_data: "contact" },
     ],
     [
@@ -98,16 +99,6 @@ const SUB_MENUS = {
       ],
     },
   },
-  broker: {
-    text: "📝 التسجيل في البروكر",
-    markup: {
-      inline_keyboard: [
-        [{ text: "🔗 رابط التسجيل 1", url: LINKS.broker1 }],
-        [{ text: "🔗 رابط التسجيل 2", url: LINKS.broker2 }],
-        BACK_ROW,
-      ],
-    },
-  },
   contact: {
     text: "💬 التواصل مع الإدارة\n\nاختر للتواصل عبر Telegram:",
     markup: {
@@ -121,6 +112,14 @@ const SUB_MENUS = {
 };
 
 const MENU_TEXTS = {
+  plan:
+    "💰 خطة الربح\n\n" +
+    "اعمل بربح تراكمي: اربح القليل تكسب الكثير.\n\n" +
+    "- استهدف ربح 1 إلى 2 دولار في الصفقة الواحدة.\n" +
+    "- على عشر صفقات في اليوم أو أقل، قد تصل أرباحك إلى ما بين 5 و10 دولار.\n" +
+    "- حدّد خسارتك مسبقاً بوقف الخسارة، بحيث لا تتجاوز 2 إلى 4 دولار في الصفقة.\n\n" +
+    "⚠️ هذه أرقام توضيحية وليست وعداً بالأرباح. كل صفقة تحمل مخاطرة على رأس المال، وقد تتتالى الخسائر. التزم بوقف الخسارة، ولا تخاطر بأكثر مما تتحمل خسارته.",
+
   intro:
     "📘 ما هو الفوركس؟\n\n" +
     "الفوركس (Forex) اختصار Foreign Exchange، وهو سوق تبادل العملات بين بعضها، مثل الدولار واليورو والين.\n\n" +
@@ -273,7 +272,60 @@ function calcMargin(args) {
   );
 }
 
-// ---------------- Durable Object: حالة كل مستخدم ----------------
+// ---------------- أدوات الإدارة ----------------
+function isAdmin(env, userId) {
+  const ids = String(env.ADMIN_IDS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return ids.includes(String(userId));
+}
+
+function registryStub(env) {
+  return env.CHAT_STATE.get(env.CHAT_STATE.idFromName(REGISTRY_NAME));
+}
+
+async function touchUser(env, userId) {
+  try {
+    await registryStub(env).touchUser(String(userId), Date.now());
+  } catch (e) {
+    console.error("touchUser failed:", e?.name, e?.message);
+  }
+}
+
+// إرسال رسالة واحدة وإرجاع الحالة: ok | blocked | failed
+async function sendRaw(env, chatId, text) {
+  for (let i = 0; i < 2; i++) {
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text,
+          link_preview_options: { is_disabled: true },
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.ok) return "ok";
+      if (res.status === 403 || (res.status === 400 && /chat not found/i.test(data?.description || ""))) {
+        return "blocked";
+      }
+      if (res.status === 429) {
+        const ra = data?.parameters?.retry_after ?? 1;
+        await sleep(Math.min(ra, 5) * 1000);
+        continue;
+      }
+      return "failed";
+    } catch {
+      await sleep(500);
+    }
+  }
+  return "failed";
+}
+
+// ---------------- Durable Object: حالة كل مستخدم + السجل العام ----------------
 export class ChatState extends DurableObject {
   async begin(updateId, now) {
     const st = this.ctx.storage;
@@ -315,6 +367,91 @@ export class ChatState extends DurableObject {
 
   async reset() {
     await this.ctx.storage.delete(["history", "lastActive"]);
+  }
+
+  // ----- السجل العام (يُستخدم فقط عبر الاسم __registry__) -----
+  async touchUser(id, now) {
+    const st = this.ctx.storage;
+    const key = "u:" + id;
+    const u = await st.get(key);
+    if (!u) {
+      await st.put(key, { f: now, l: now });
+      return;
+    }
+    if (now - u.l > 60_000) await st.put(key, { f: u.f, l: now });
+  }
+
+  async stats(now) {
+    const all = await this.ctx.storage.list({ prefix: "u:" });
+    const DAY = 24 * 3600 * 1000;
+    let total = 0,
+      active1 = 0,
+      active7 = 0,
+      new1 = 0;
+    for (const [, u] of all) {
+      total++;
+      if (now - u.l < DAY) active1++;
+      if (now - u.l < 7 * DAY) active7++;
+      if (now - u.f < DAY) new1++;
+    }
+    const job = await this.ctx.storage.get("job");
+    return { total, active1, active7, new1, broadcasting: !!job };
+  }
+
+  async removeUser(id) {
+    await this.ctx.storage.delete("u:" + id);
+  }
+
+  async startBroadcast(text, adminChatId) {
+    const st = this.ctx.storage;
+    if (await st.get("job")) return { ok: false, reason: "busy" };
+    const all = await st.list({ prefix: "u:" });
+    if (all.size === 0) return { ok: false, reason: "empty" };
+    await st.put("job", {
+      text,
+      adminChatId,
+      cursor: "",
+      total: all.size,
+      sent: 0,
+      failed: 0,
+      blocked: 0,
+    });
+    await st.setAlarm(Date.now() + 500);
+    return { ok: true, total: all.size };
+  }
+
+  async alarm() {
+    const st = this.ctx.storage;
+    const job = await st.get("job");
+    if (!job) return;
+
+    const opts = { prefix: "u:", limit: BC_BATCH };
+    if (job.cursor) opts.startAfter = job.cursor;
+    const batch = await st.list(opts);
+
+    if (batch.size === 0) {
+      await st.delete("job");
+      await sendRaw(
+        this.env,
+        job.adminChatId,
+        `✅ انتهى البث\n- وصلت: ${job.sent}\n- فشلت: ${job.failed}\n- حظروا البوت (أُزيلوا من القائمة): ${job.blocked}`
+      );
+      return;
+    }
+
+    for (const [key] of batch) {
+      const id = key.slice(2);
+      const r = await sendRaw(this.env, id, job.text);
+      if (r === "ok") job.sent++;
+      else if (r === "blocked") {
+        job.blocked++;
+        await st.delete(key);
+      } else job.failed++;
+      job.cursor = key;
+      await sleep(50);
+    }
+    await st.put("job", job);
+    await st.setAlarm(Date.now() + BC_DELAY_MS);
   }
 }
 
@@ -397,6 +534,7 @@ async function handleCallback(update, env) {
   }
 
   await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+  await touchUser(env, cq.from.id);
 
   if (cq.data === "menu") {
     await showScreen(env, cq, TEXT_MENU, MENU_KEYBOARD);
@@ -414,9 +552,109 @@ async function handleCallback(update, env) {
   await showScreen(env, cq, text, BACK_KEYBOARD);
 }
 
+async function handleAdminCommand(env, chatId, name, args) {
+  if (name === "stats") {
+    const s = await registryStub(env).stats(Date.now());
+    await sendText(
+      env,
+      chatId,
+      "📊 إحصائيات البوت\n\n" +
+        `- إجمالي المستخدمين: ${s.total}\n` +
+        `- نشطون خلال 24 ساعة: ${s.active1}\n` +
+        `- نشطون خلال 7 أيام: ${s.active7}\n` +
+        `- جدد خلال 24 ساعة: ${s.new1}\n` +
+        (s.broadcasting ? "\n⏳ هناك بث قيد التنفيذ الآن." : "") +
+        "\n\nالعدد يشمل من حظروا البوت إلى أن يُجرى بث فتُزال حساباتهم."
+    );
+    return true;
+  }
+
+  if (name === "broadcast") {
+    const msgText = args.trim();
+    if (!msgText) {
+      await sendText(env, chatId, "الصيغة: /broadcast نص الرسالة\nترسل إلى كل مستخدمي البوت.");
+      return true;
+    }
+    if (msgText.length > 4000) {
+      await sendText(env, chatId, "الرسالة طويلة، الحد الأقصى 4000 حرف.");
+      return true;
+    }
+    const r = await registryStub(env).startBroadcast(msgText, chatId);
+    if (!r.ok) {
+      await sendText(
+        env,
+        chatId,
+        r.reason === "busy" ? "هناك بث قيد التنفيذ، انتظر حتى ينتهي." : "لا يوجد مستخدمون بعد."
+      );
+    } else {
+      await sendText(env, chatId, `🚀 بدأ البث إلى ${r.total} مستخدم. سأرسل لك تقريراً عند الانتهاء.`);
+    }
+    return true;
+  }
+
+  if (name === "send") {
+    const m = args.match(/^\s*(\d+)\s+([\s\S]+)$/);
+    if (!m) {
+      await sendText(env, chatId, "الصيغة: /send معرّف_المستخدم نص الرسالة\nمثال: /send 123456789 مرحباً");
+      return true;
+    }
+    const r = await sendRaw(env, m[1], m[2].trim().slice(0, 4000));
+    await sendText(
+      env,
+      chatId,
+      r === "ok" ? "✅ تم الإرسال." : r === "blocked" ? "❌ المستخدم حظر البوت أو لم يبدأه." : "❌ فشل الإرسال."
+    );
+    return true;
+  }
+
+  if (name === "channelpost") {
+    if (!env.CHANNEL_ID || !env.BOT_USERNAME) {
+      await sendText(env, chatId, "أضف المتغيرين CHANNEL_ID و BOT_USERNAME أولاً.");
+      return true;
+    }
+    const msgText = args.trim();
+    if (!msgText) {
+      await sendText(env, chatId, "الصيغة: /channelpost نص المنشور\nينشر في القناة مع زر يفتح البوت.");
+      return true;
+    }
+    const r = await tg(env, "sendMessage", {
+      chat_id: env.CHANNEL_ID,
+      text: msgText.slice(0, 4000),
+      reply_markup: {
+        inline_keyboard: [[{ text: "🤖 ابدأ مع البوت", url: `https://t.me/${env.BOT_USERNAME}` }]],
+      },
+    });
+    await sendText(env, chatId, r ? "✅ تم النشر في القناة." : "❌ فشل النشر. تأكد أن البوت مشرف في القناة وأن CHANNEL_ID صحيح.");
+    return true;
+  }
+
+  return false;
+}
+
+// يضيف زر "ادخل إلى البوت" تحت كل منشور جديد في القناة
+async function handleChannelPost(post, env) {
+  if (!env.BOT_USERNAME || !post?.chat || post.chat.type !== "channel") return;
+  if (env.CHANNEL_ID) {
+    const want = String(env.CHANNEL_ID).trim().toLowerCase();
+    const byId = String(post.chat.id) === want;
+    const byName = post.chat.username && "@" + post.chat.username.toLowerCase() === want;
+    if (!byId && !byName) return;
+  }
+  if (post.media_group_id) return; // الألبومات لا تدعم الأزرار
+  if (post.reply_markup) return; // المنشور فيه أزرار أصلاً
+  await tg(env, "editMessageReplyMarkup", {
+    chat_id: post.chat.id,
+    message_id: post.message_id,
+    reply_markup: {
+      inline_keyboard: [[{ text: "🤖 ادخل إلى البوت", url: `https://t.me/${env.BOT_USERNAME}` }]],
+    },
+  });
+}
+
 async function processUpdate(update, env) {
   if (typeof update?.update_id !== "number") return;
   if (update.callback_query) return handleCallback(update, env);
+  if (update.channel_post) return handleChannelPost(update.channel_post, env);
 
   const msg = update.message;
   if (!msg || !msg.chat || msg.chat.type !== "private" || !msg.from || msg.from.is_bot) return;
@@ -430,6 +668,8 @@ async function processUpdate(update, env) {
     await sendText(env, chatId, `⏳ رسائل كثيرة بسرعة. حاول بعد ${gate.retryAfter} ثانية.`);
     return;
   }
+
+  await touchUser(env, msg.from.id);
 
   const text = typeof msg.text === "string" ? msg.text.trim() : "";
   if (!text) {
@@ -447,9 +687,14 @@ async function processUpdate(update, env) {
     if (name === "lot") return void (await sendText(env, chatId, calcLot(args)));
     if (name === "pip") return void (await sendText(env, chatId, calcPip(args)));
     if (name === "margin") return void (await sendText(env, chatId, calcMargin(args)));
+    if (name === "id") return void (await sendText(env, chatId, `معرّفك في تيليجرام: ${msg.from.id}`));
     if (name === "reset") {
       await stub.reset();
       return void (await sendText(env, chatId, "✅ تم مسح السياق. ابدأ موضوعاً جديداً."));
+    }
+    if (isAdmin(env, msg.from.id)) {
+      const handled = await handleAdminCommand(env, chatId, name, args);
+      if (handled) return;
     }
     return void (await sendText(env, chatId, "أمر غير معروف. اكتب /help لعرض المساعدة."));
   }
