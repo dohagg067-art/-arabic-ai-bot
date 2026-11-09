@@ -52,6 +52,7 @@ const TEXT_HELP =
   "• يمكنك أيضاً أن تسألني في مواضيع أخرى.\n" +
   "• أتذكر سياق محادثتنا الأخيرة لأتابع معك.\n" +
   "• /menu — القائمة الرئيسية.\n" +
+  "• /lot و/pip و/margin — حاسبات الفوركس (التفاصيل من زر 🧮 حاسبات الفوركس).\n" +
   "• /reset — يمسح السياق لتبدأ موضوعاً جديداً.\n" +
   "• /start — رسالة الترحيب.\n\n" +
   "ملاحظة: ليس لدي أسعار حية ولا أخبار حالية، فراجع منصة التداول للأسعار. المحتوى تعليمي وليس نصيحة مالية. أدعم الرسائل النصية فقط، وهناك حد لعدد الرسائل في الدقيقة.";
@@ -77,11 +78,14 @@ const MENU_KEYBOARD = {
       { text: "🚀 كيف أبدأ؟", callback_data: "howto" },
     ],
     [
+      { text: "🧮 حاسبات الفوركس", callback_data: "calc" },
       { text: "⚠️ تحذيرات مهمة", callback_data: "warn" },
-      { text: "ℹ️ عن البوت", callback_data: "about" },
     ],
+    [{ text: "ℹ️ عن البوت", callback_data: "about" }],
   ],
 };
+
+const BACK_KEYBOARD = { inline_keyboard: [BACK_ROW] };
 
 const SUB_MENUS = {
   courses: {
@@ -169,6 +173,20 @@ const MENU_TEXTS = {
     "- لا تتداول تحت ضغط أحد أو بدافع الخوف من فوات الفرصة.\n\n" +
     "إذا شككت في جهة ما فتوقف وتحقق منها قبل إيداع أي مبلغ.",
 
+  calc:
+    "🧮 حاسبات الفوركس\n\n" +
+    "أرسل الأمر مع الأرقام، مفصولة بمسافات:\n\n" +
+    "1) حجم اللوت حسب المخاطرة:\n" +
+    "/lot الرصيد نسبة_المخاطرة وقف_الخسارة_بالنقاط\n" +
+    "مثال: /lot 1000 1 20\n\n" +
+    "2) قيمة النقطة (البيب):\n" +
+    "/pip حجم_اللوت\n" +
+    "مثال: /pip 0.1\n\n" +
+    "3) الهامش المطلوب:\n" +
+    "/margin حجم_اللوت الرافعة\n" +
+    "مثال: /margin 0.1 100\n\n" +
+    "الافتراضات: حساب بالدولار، وزوج عملة التسعير فيه الدولار مثل EUR/USD، وقيمة النقطة 10 دولار للوت القياسي. هذه تقديرات تعليمية، وتختلف الأرقام الفعلية بحسب الزوج والوسيط، فراجع حاسبة منصتك قبل أي صفقة.",
+
   about:
     "ℹ️ عن البوت\n\n" +
     "بوت تعليمي عن الفوركس يعمل بالذكاء الاصطناعي.\n" +
@@ -180,6 +198,80 @@ const MENU_TEXTS = {
     "- المحتوى تعليمي فقط وليس نصيحة مالية.\n\n" +
     "الأوامر: /menu و/help و/reset",
 };
+
+// ---------------- الحاسبات (تُحسب برمجياً) ----------------
+function parseNums(argsText) {
+  const normalized = argsText
+    .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
+    .replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)))
+    .replace(/٫/g, ".")
+    .replace(/,/g, ".");
+  return normalized
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((x) => Number(x));
+}
+
+function validNums(nums, count) {
+  return nums.length >= count && nums.slice(0, count).every((n) => Number.isFinite(n) && n > 0);
+}
+
+const fmt = (n, d = 2) => Number(n.toFixed(d)).toLocaleString("en-US", { maximumFractionDigits: d });
+
+function calcLot(args) {
+  const n = parseNums(args);
+  if (!validNums(n, 3)) {
+    return "الصيغة: /lot الرصيد نسبة_المخاطرة وقف_الخسارة_بالنقاط\nمثال: /lot 1000 1 20";
+  }
+  const [balance, riskPct, slPips] = n;
+  if (riskPct > 100) return "نسبة المخاطرة يجب ألا تتجاوز 100.";
+  const riskAmount = balance * (riskPct / 100);
+  const pipValuePerLot = 10;
+  const lots = riskAmount / (slPips * pipValuePerLot);
+  return (
+    "🧮 حجم اللوت حسب المخاطرة\n\n" +
+    `- الرصيد: ${fmt(balance)} دولار\n` +
+    `- نسبة المخاطرة: ${fmt(riskPct)}%\n` +
+    `- مبلغ المخاطرة: ${fmt(riskAmount)} دولار\n` +
+    `- وقف الخسارة: ${fmt(slPips, 1)} نقطة\n\n` +
+    `الحجم المقترح: ${fmt(lots, 2)} لوت\n\n` +
+    "المعادلة: مبلغ المخاطرة ÷ (وقف الخسارة × قيمة النقطة للوت). افترضتُ أن قيمة النقطة 10 دولار للوت القياسي، وهذا يصح للأزواج التي عملة التسعير فيها الدولار مثل EUR/USD. للأزواج الأخرى تختلف القيمة، فراجع حاسبة منصتك. وقد يضع الوسيط حداً أدنى لحجم الصفقة.\n\n" +
+    "تقدير تعليمي وليس نصيحة مالية."
+  );
+}
+
+function calcPip(args) {
+  const n = parseNums(args);
+  if (!validNums(n, 1)) {
+    return "الصيغة: /pip حجم_اللوت\nمثال: /pip 0.1";
+  }
+  const lots = n[0];
+  const value = lots * 10;
+  return (
+    "🧮 قيمة النقطة (البيب)\n\n" +
+    `- حجم الصفقة: ${fmt(lots, 2)} لوت\n\n` +
+    `قيمة النقطة الواحدة: حوالي ${fmt(value)} دولار\n\n` +
+    "افترضتُ أن النقطة تساوي 10 دولار للوت القياسي، وهذا يصح للأزواج التي عملة التسعير فيها الدولار مثل EUR/USD. للأزواج الأخرى مثل USD/JPY تختلف القيمة، فراجع حاسبة منصتك.\n\n" +
+    "تقدير تعليمي وليس نصيحة مالية."
+  );
+}
+
+function calcMargin(args) {
+  const n = parseNums(args);
+  if (!validNums(n, 2)) {
+    return "الصيغة: /margin حجم_اللوت الرافعة\nمثال: /margin 0.1 100";
+  }
+  const [lots, leverage] = n;
+  const units = lots * 100000;
+  return (
+    "🧮 الهامش المطلوب\n\n" +
+    `- حجم الصفقة: ${fmt(lots, 2)} لوت (${fmt(units, 0)} وحدة من عملة الأساس)\n` +
+    `- الرافعة: 1:${fmt(leverage, 0)}\n\n` +
+    `الهامش: ${fmt(units / leverage)} وحدة من عملة الأساس\n\n` +
+    "هذا الرقم بعملة الأساس للزوج وليس بالدولار. مثلاً في EUR/USD هو باليورو، ولتحويله للدولار اضربه في سعر الزوج الحالي من منصتك، وأنا لا أملك أسعاراً حية. تختلف طريقة الحساب قليلاً بين الوسطاء، فراجع حاسبة منصتك.\n\n" +
+    "تقدير تعليمي وليس نصيحة مالية."
+  );
+}
 
 // ---------------- Durable Object: حالة كل مستخدم ----------------
 export class ChatState extends DurableObject {
@@ -261,6 +353,9 @@ export default {
         commands: [
           { command: "start", description: "بدء المحادثة" },
           { command: "menu", description: "القائمة الرئيسية" },
+          { command: "lot", description: "حاسبة حجم اللوت" },
+          { command: "pip", description: "حاسبة قيمة النقطة" },
+          { command: "margin", description: "حاسبة الهامش" },
           { command: "help", description: "طريقة الاستخدام" },
           { command: "reset", description: "مسح سياق المحادثة" },
         ],
@@ -304,19 +399,19 @@ async function handleCallback(update, env) {
   await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
 
   if (cq.data === "menu") {
-    await sendText(env, chat.id, TEXT_MENU, MENU_KEYBOARD);
+    await showScreen(env, cq, TEXT_MENU, MENU_KEYBOARD);
     return;
   }
 
   const sub = SUB_MENUS[cq.data];
   if (sub) {
-    await sendText(env, chat.id, sub.text, sub.markup);
+    await showScreen(env, cq, sub.text, sub.markup);
     return;
   }
 
   const text = MENU_TEXTS[cq.data];
   if (!text) return;
-  await sendText(env, chat.id, text, MENU_KEYBOARD);
+  await showScreen(env, cq, text, BACK_KEYBOARD);
 }
 
 async function processUpdate(update, env) {
@@ -342,12 +437,16 @@ async function processUpdate(update, env) {
     return;
   }
 
-  const cmd = text.match(/^\/(\w+)(?:@\w+)?(?:\s|$)/);
+  const cmd = text.match(/^\/(\w+)(?:@\w+)?(?:\s+([\s\S]*))?$/);
   if (cmd) {
     const name = cmd[1].toLowerCase();
+    const args = cmd[2] ?? "";
     if (name === "start") return void (await sendText(env, chatId, TEXT_START, MENU_KEYBOARD));
     if (name === "menu") return void (await sendText(env, chatId, TEXT_MENU, MENU_KEYBOARD));
     if (name === "help") return void (await sendText(env, chatId, TEXT_HELP));
+    if (name === "lot") return void (await sendText(env, chatId, calcLot(args)));
+    if (name === "pip") return void (await sendText(env, chatId, calcPip(args)));
+    if (name === "margin") return void (await sendText(env, chatId, calcMargin(args)));
     if (name === "reset") {
       await stub.reset();
       return void (await sendText(env, chatId, "✅ تم مسح السياق. ابدأ موضوعاً جديداً."));
@@ -476,6 +575,22 @@ async function tg(env, method, body) {
     }
   }
   return null;
+}
+
+async function showScreen(env, cq, text, markup) {
+  const chatId = cq.message.chat.id;
+  const messageId = cq.message.message_id;
+  if (text.length <= TG_CHUNK) {
+    const r = await tg(env, "editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      reply_markup: markup,
+      link_preview_options: { is_disabled: true },
+    });
+    if (r) return;
+  }
+  await sendText(env, chatId, text, markup);
 }
 
 async function sendText(env, chatId, text, markup) {
