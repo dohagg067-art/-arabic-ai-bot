@@ -10,6 +10,16 @@ const RATE_WINDOW_MS = 60_000;
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
 const TG_CHUNK = 4000;
 
+const LINKS = {
+  channel: "https://t.me/LCZX2rwquB8wOWMx",
+  courseBasic: "https://youtube.com/@changewavetradinggroup?si=ZKZTfKeq9zg3g8ML",
+  courseAdvanced: "https://t.me/+dlEdfe7TGHo1YTAx",
+  broker1: "https://dupoin.pro/cevrt3o6b",
+  broker2: "https://dupoin.me/lfdzstgll",
+  admin1: "https://t.me/Yazan33kb",
+  admin2: "https://t.me/MARWA_ELSABBAGH",
+};
+
 const SYSTEM_PROMPT =
   "أنت مساعد ذكي خبير في سوق الفوركس والتداول، داخل Telegram. " +
   "مؤسس هذا البوت اسمه YAZAN KASSAB. إذا سُئلت عن مؤسسه فاكتب الاسم حرفياً بالأحرف اللاتينية YAZAN KASSAB ولا تترجمه ولا تكتبه بالعربية. " +
@@ -46,8 +56,18 @@ const TEXT_HELP =
   "• /start — رسالة الترحيب.\n\n" +
   "ملاحظة: ليس لدي أسعار حية ولا أخبار حالية، فراجع منصة التداول للأسعار. المحتوى تعليمي وليس نصيحة مالية. أدعم الرسائل النصية فقط، وهناك حد لعدد الرسائل في الدقيقة.";
 
+const BACK_ROW = [{ text: "🔙 القائمة الرئيسية", callback_data: "menu" }];
+
 const MENU_KEYBOARD = {
   inline_keyboard: [
+    [
+      { text: "📢 القناة العامة", url: LINKS.channel },
+      { text: "🎓 كورسات تعليمية", callback_data: "courses" },
+    ],
+    [
+      { text: "📝 التسجيل في البروكر", callback_data: "broker" },
+      { text: "💬 التواصل مع الإدارة", callback_data: "contact" },
+    ],
     [
       { text: "📘 ما هو الفوركس؟", callback_data: "intro" },
       { text: "📖 أهم المصطلحات", callback_data: "terms" },
@@ -61,6 +81,39 @@ const MENU_KEYBOARD = {
       { text: "ℹ️ عن البوت", callback_data: "about" },
     ],
   ],
+};
+
+const SUB_MENUS = {
+  courses: {
+    text: "🎓 كورسات تعليمية\n\nاختر الكورس المناسب لمستواك:",
+    markup: {
+      inline_keyboard: [
+        [{ text: "📗 كورس مبتدئ: الأساسيات", url: LINKS.courseBasic }],
+        [{ text: "📘 كورس احترافي: استراتيجيات", url: LINKS.courseAdvanced }],
+        BACK_ROW,
+      ],
+    },
+  },
+  broker: {
+    text: "📝 التسجيل في البروكر",
+    markup: {
+      inline_keyboard: [
+        [{ text: "🔗 رابط التسجيل 1", url: LINKS.broker1 }],
+        [{ text: "🔗 رابط التسجيل 2", url: LINKS.broker2 }],
+        BACK_ROW,
+      ],
+    },
+  },
+  contact: {
+    text: "💬 التواصل مع الإدارة\n\nاختر للتواصل عبر Telegram:",
+    markup: {
+      inline_keyboard: [
+        [{ text: "@Yazan33kb", url: LINKS.admin1 }],
+        [{ text: "@MARWA_ELSABBAGH", url: LINKS.admin2 }],
+        BACK_ROW,
+      ],
+    },
+  },
 };
 
 const MENU_TEXTS = {
@@ -125,7 +178,7 @@ const MENU_TEXTS = {
     "- ليس لديه أسعار حية ولا أخبار حالية.\n" +
     "- قد يخطئ أحياناً، فتحقق من المعلومات المهمة.\n" +
     "- المحتوى تعليمي فقط وليس نصيحة مالية.\n\n" +
-    "الأوامر: /menu /help /reset",
+    "الأوامر: /menu و/help و/reset",
 };
 
 // ---------------- Durable Object: حالة كل مستخدم ----------------
@@ -249,6 +302,18 @@ async function handleCallback(update, env) {
   }
 
   await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+
+  if (cq.data === "menu") {
+    await sendText(env, chat.id, TEXT_MENU, MENU_KEYBOARD);
+    return;
+  }
+
+  const sub = SUB_MENUS[cq.data];
+  if (sub) {
+    await sendText(env, chat.id, sub.text, sub.markup);
+    return;
+  }
+
   const text = MENU_TEXTS[cq.data];
   if (!text) return;
   await sendText(env, chat.id, text, MENU_KEYBOARD);
